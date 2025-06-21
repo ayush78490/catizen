@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Catizen Game</title>
+  <!-- Web3.js for wallet functionality -->
+  <script src="https://cdn.jsdelivr.net/npm/web3@1.8.0/dist/web3.min.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #unity-container {
+      width: 100%;
+      height: 100%;
+    }
+    #unity-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    /* Improved Toast notification styles */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 15px 25px;
+      border-radius: 8px;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.5s ease-in-out;
+      max-width: 80%;
+      text-align: center;
+      font-size: 16px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      word-break: break-word;
+    }
+    .toast.show {
+      opacity: 1;
+    }
+    .toast.success {
+      background-color: rgba(40, 167, 69, 0.9);
+    }
+    .toast.error {
+      background-color: rgba(220, 53, 69, 0.9);
+    }
+    .toast.warning {
+      background-color: rgba(255, 193, 7, 0.9);
+      color: #212529;
+    }
+  </style>
+</head>
+<body>
+  <div id="unity-container">
+    <canvas id="unity-canvas"></canvas>
+  </div>
+  <!-- Toast container -->
+  <div id="toast" class="toast"></div>
+
+  <script>
+    // Firebase configuration
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      databaseURL: "YOUR_DATABASE_URL",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_STORAGE_BUCKET",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    // Firebase variables
+    let firebaseApp;
+    let database;
+    let currentPlayerId;
+
+    // Web3 variables
+    let web3;
+    let connectedAddress = '';
+    const coreTestnetChainId = '0x45a'; // Core Testnet2 chain ID
+    // Note: senderAddress and senderPrivateKey should be handled server-side in production
+    const senderAddress = '0x3d31D8720eE186c6134E5c82021e11Ce84d705D3';
+    const senderPrivateKey = '7373efdbb6357c06ed7c155c161d922bb9960c9598dbf6ae147fcc09b874c9a0'; // Replace with backend API call for production
+
+    // Initialize Firebase
+    function initializeFirebase() {
+      try {
+        firebaseApp = firebase.initializeApp(firebaseConfig);
+        database = firebase.database(firebaseApp);
+        console.log("Firebase initialized successfully");
+      } catch (error) {
+        console.error("Firebase initialization error:", error);
+      }
+    }
+
+    // Register new player
+    function registerNewPlayer(playerName) {
+      if (!database) {
+        console.error("Firebase not initialized");
+        return;
+      }
+
+      try {
+        const playerRef = database.ref('players/' + connectedAddress);
+        playerRef.once('value').then((snapshot) => {
+          if (!snapshot.exists()) {
+            const newPlayer = {
+              name: playerName,
+              address: connectedAddress,
+              highScore: 0,
+              lastPlayed: new Date().toISOString()
+            };
+            playerRef.set(newPlayer)
+              .then(() => {
+                currentPlayerId = connectedAddress;
+                console.log("New player registered");
+                if (window.unityInstance) {
+                  window.unityInstance.SendMessage('FirebaseManager', 'OnPlayerRegistered', connectedAddress);
+                }
+              })
+              .catch((error) => {
+                console.error("Player registration failed:", error);
+              });
+          } else {
+            currentPlayerId = connectedAddress;
+            if (window.unityInstance) {
+              window.unityInstance.SendMessage('FirebaseManager', 'OnPlayerAlreadyRegistered', connectedAddress);
+            }
+          }
+        });
+      } catch (error) {
+        console.error("Player registration error:", error);
+      }
+    }
+
+    // Submit score
+    function submitScore(score) {
+      if (!database || !currentPlayerId) {
+        console.error("Firebase not initialized or player not registered");
+        return;
+      }
+
+      try {
+        const playerRef = database.ref('players/' + currentPlayerId);
+        playerRef.once('value').then((snapshot) => {
+          const playerData = snapshot.val();
+          if (playerData) {
+            if (score > playerData.highScore) {
+              playerRef.update({
+                highScore: score,
+                lastPlayed: new Date().toISOString()
+              })
+              .then(() => {
+                console.log("Score updated successfully");
+                if (window.unityInstance) {
+                  window.unityInstance.SendMessage('FirebaseManager', 'OnScoreSubmitted', score);
+                }
+              })
+              .catch((error) => {
+                console.error("Score update failed:", error);
+              });
+            }
+          }
+        });
+      } catch (error) {
+        console.error("Score submission error:", error);
+      }
+    }
+
+    // Check player's best score
+    function checkPlayerBestScore() {
+      if (!database || !currentPlayerId) {
+        console.error("Firebase not initialized or player not registered");
+        return;
+      }
+
+      try {
+        const playerRef = database.ref('players/' + currentPlayerId);
+        playerRef.once('value').then((snapshot) => {
+          const playerData = snapshot.val();
+          if (playerData && window.unityInstance) {
+            window.unityInstance.SendMessage('FirebaseManager', 'OnBestScoreReceived', playerData.highScore);
+          }
+        });
+      } catch (error) {
+        console.error("Best score check error:", error);
+      }
+    }
+
+    // Get leaderboard
+    function getLeaderboard() {
+      if (!database) {
+        console.error("Firebase not initialized");
+        return;
+      }
+
+      try {
+        const playersRef = database.ref('players');
+        playersRef.orderByChild('highScore').limitToLast(10).once('value')
+          .then((snapshot) => {
+            const leaderboard = [];
+            snapshot.forEach((childSnapshot) => {
+              leaderboard.push(childSnapshot.val());
+            });
+            leaderboard.reverse(); // Highest score first
+            if (window.unityInstance) {
+              window.unityInstance.SendMessage('FirebaseManager', 'OnLeaderboardReceived', JSON.stringify(leaderboard));
+            }
+          });
+      } catch (error) {
+        console.error("Leaderboard fetch error:", error);
+      }
+    }
+
+    // Initialize Web3 and connect wallet
+    async function connectWallet() {
+      if (!window.ethereum) {
+        showToast('Please install MetaMask!', 'error');
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletDisconnected', 'MetaMask not installed');
+        }
+        return;
+      }
+      try {
+        web3 = new Web3(window.ethereum);
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        
+        if (accounts.length > 0) {
+          connectedAddress = accounts[0];
+          await checkNetwork();
+          const balance = await getNativeBalance();
+          
+          // Notify Unity
+          if (window.unityInstance) {
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletConnected', connectedAddress);
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+          }
+          showToast('Wallet connected successfully!', 'success');
+        } else {
+          throw new Error('No accounts found');
+        }
+      } catch (error) {
+        console.error("Wallet connection error:", error);
+        showToast('Wallet connection failed: ' + error.message, 'error');
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletDisconnected', error.message);
+        }
+      }
+    }
+
+    // Check and switch to Core Testnet2
+    async function checkNetwork() {
+      try {
+        const chainId = await web3.eth.getChainId();
+        if (chainId.toString(16) !== coreTestnetChainId.substring(2)) {
+          try {
+            await window.ethereum.request({
+              method: 'wallet_switchEthereumChain',
+              params: [{ chainId: coreTestnetChainId }]
+            });
+          } catch (switchError) {
+            if (switchError.code === 4902) {
+              await window.ethereum.request({
+                method: 'wallet_addEthereumChain',
+                params: [{
+                  chainId: coreTestnetChainId,
+                  chainName: 'Core Testnet2',
+                  nativeCurrency: {
+                    name: 'Testnet Core',
+                    symbol: 'tCORE',
+                    decimals: 18
+                  },
+                  rpcUrls: ['https://rpc.test2.btcs.network'],
+                  blockExplorerUrls: ['https://scan.test2.btcs.network']
+                }]
+              });
+            } else {
+              throw switchError;
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Network check failed:", error);
+        showToast('Failed to switch to Core Testnet2', 'error');
+      }
+    }
+
+    // Get native tCORE balance - improved version
+    async function getNativeBalance() {
+      if (!connectedAddress || !web3) {
+        console.log("No connected address or web3 instance");
+        return "0";
+      }
+      
+      try {
+        // First check if we're on the correct network
+        const chainId = await web3.eth.getChainId();
+        if (chainId.toString(16) !== coreTestnetChainId.substring(2)) {
+          console.log("Wrong network for balance check");
+          return "0";
+        }
+        
+        const balance = await web3.eth.getBalance(connectedAddress);
+        const formattedBalance = web3.utils.fromWei(balance, 'ether');
+        console.log("Balance fetched:", formattedBalance);
+        return formattedBalance;
+      } catch (error) {
+        console.error("Balance fetch error:", error);
+        return "0";
+      }
+    }
+
+    // Send 0.0001 tCORE transaction
+    async function sendRewardTransaction() {
+      if (!web3 || !connectedAddress) {
+        showToast('Please connect your wallet first!', 'error');
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Wallet not connected');
+        }
+        return;
+      }
+
+      if (!senderPrivateKey) {
+        showToast('Private key not configured. Contact support.', 'error');
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Private key not configured');
+        }
+        return;
+      }
+
+      try {
+        showToast('Processing transaction...', 'warning');
+        
+        const amount = web3.utils.toWei('0.0001', 'ether'); // 0.0001 tCORE
+        const nonce = await web3.eth.getTransactionCount(senderAddress, 'latest');
+        const gasPrice = await web3.eth.getGasPrice();
+        const gasLimit = 21000; // Standard for ETH/tCORE transfer
+
+        const tx = {
+          from: senderAddress,
+          to: connectedAddress,
+          value: amount,
+          gas: gasLimit,
+          gasPrice: gasPrice,
+          nonce: nonce
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, senderPrivateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+        
+        const txHashShort = receipt.transactionHash.substring(0, 6) + '...' + receipt.transactionHash.substring(receipt.transactionHash.length - 4);
+        showToast(`Success! Sent 0.0001 tCORE to your wallet. TX: ${txHashShort}`, 'success');
+        
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionSuccess', receipt.transactionHash);
+          // Refresh balance after transaction
+          const balance = await getNativeBalance();
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+        }
+      } catch (error) {
+        console.error("Transaction error:", error);
+        showToast('Transaction failed: ' + (error.message || 'Unknown error'), 'error');
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', error.message || 'Unknown error');
+        }
+      }
+    }
+
+    // Improved toast notification with types
+    function showToast(message, type = '') {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = 'toast'; // Reset classes
+      
+      if (type) {
+        toast.classList.add(type);
+      }
+      
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 5000);
+    }
+
+    // Wallet event listeners
+    function initWalletListeners() {
+      if (window.ethereum) {
+        window.ethereum.on('accountsChanged', async (accounts) => {
+          if (accounts.length > 0) {
+            connectedAddress = accounts[0];
+            showToast('Wallet account changed', 'warning');
+            if (window.unityInstance) {
+              window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletConnected', connectedAddress);
+              try {
+                const balance = await getNativeBalance();
+                window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+              } catch (error) {
+                console.error("Error fetching balance after account change:", error);
+              }
+            }
+          } else {
+            connectedAddress = '';
+            showToast('Wallet disconnected', 'warning');
+            if (window.unityInstance) {
+              window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletDisconnected', 'No accounts available');
+            }
+          }
+        });
+
+        window.ethereum.on('chainChanged', async (chainId) => {
+          showToast('Network changed', 'warning');
+          // Check if the new chain is Core Testnet2
+          if (chainId === coreTestnetChainId) {
+            if (connectedAddress && window.unityInstance) {
+              try {
+                const balance = await getNativeBalance();
+                window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+              } catch (error) {
+                console.error("Error fetching balance after chain change:", error);
+              }
+            }
+          } else {
+            showToast('Please switch to Core Testnet2', 'error');
+          }
+        });
+      }
+    }
+
+    // Expose functions to Unity
+    window.connectMetaMask = connectWallet;
+    window.getConnectedAddress = () => connectedAddress;
+    window.getTCORE2Balance = async () => {
+      try {
+        const balance = await getNativeBalance();
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+        }
+        return balance;
+      } catch (error) {
+        console.error("Error in getTCORE2Balance:", error);
+        return "0";
+      }
+    };
+    window.SendRewardTransaction = sendRewardTransaction;
+    
+    // Expose Firebase functions to Unity
+    window.initializeFirebase = initializeFirebase;
+    window.registerNewPlayer = registerNewPlayer;
+    window.submitScore = submitScore;
+    window.checkPlayerBestScore = checkPlayerBestScore;
+    window.getLeaderboard = getLeaderboard;
+
+    // Initialize on page load
+    window.addEventListener('load', async () => {
+      initWalletListeners();
+      if (window.ethereum && window.ethereum.selectedAddress) {
+        connectedAddress = window.ethereum.selectedAddress;
+        web3 = new Web3(window.ethereum);
+        if (window.unityInstance) {
+          window.unityInstance.SendMessage('CoreWalletConnector', 'OnWalletConnected', connectedAddress);
+          try {
+            const balance = await getNativeBalance();
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+          } catch (error) {
+            console.error("Error fetching initial balance:", error);
+          }
+        }
+      }
+    });
+
+    // Unity WebGL loader
+    const buildUrl = "Build";
+    const canvas = document.getElementById("unity-canvas");
+    const config = {
+      dataUrl: buildUrl + "/catizenTest.data.br",
+      frameworkUrl: buildUrl + "/catizenTest.framework.js.br",
+      codeUrl: buildUrl + "/catizenTest.wasm.br",
+      streamingAssetsUrl: "StreamingAssets",
+      companyName: "YourCompany",
+      productName: "Catizen",
+      productVersion: "1.0",
+      decompressionFallback: true
+    };
+
+    const script = document.createElement("script");
+    script.src = buildUrl + "/catizenTest.loader.js";
+    script.onload = () => {
+      createUnityInstance(canvas, config).then((unityInstance) => {
+        window.unityInstance = unityInstance;
+      }).catch((error) => {
+        console.error("Error loading Unity:", error);
+        showToast("Failed to load game: " + error.message, 'error');
+      });
+    };
+    document.body.appendChild(script);
+  </script>
+</body>
+</html>
