@@ -25,26 +25,36 @@
       display: block;
     }
     /* Improved Toast notification styles */
-    .toast {
+    .toast-container {
       position: fixed;
       bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
+      right: 20px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column-reverse; /* Newest toast on top */
+      align-items: flex-end;
+      gap: 10px; /* Space between toasts */
+      pointer-events: none;
+    }
+    .toast {
       background-color: rgba(0, 0, 0, 0.8);
       color: white;
       padding: 15px 25px;
       border-radius: 8px;
-      z-index: 1000;
       opacity: 0;
-      transition: opacity 0.5s ease-in-out;
-      max-width: 80%;
+      transition: opacity 0.5s, transform 0.5s;
+      max-width: 320px;
       text-align: center;
       font-size: 16px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       word-break: break-word;
+      margin-top: 0;
+      pointer-events: auto;
+      transform: translateY(20px);
     }
     .toast.show {
       opacity: 1;
+      transform: translateY(0);
     }
     .toast.success {
       background-color: rgba(40, 167, 69, 0.9);
@@ -62,8 +72,8 @@
   <div id="unity-container">
     <canvas id="unity-canvas"></canvas>
   </div>
-  <!-- Toast container -->
-  <div id="toast" class="toast"></div>
+  <!-- Toast container (now for multiple toasts) -->
+  <div id="toast-container" class="toast-container"></div>
 
   <script>
     // Firebase configuration
@@ -318,75 +328,101 @@
       }
     }
 
-    // Send 0.0001 tCORE transaction
-    async function sendRewardTransaction() {
-      if (!web3 || !connectedAddress) {
-        showToast('Please connect your wallet first!', 'error');
-        if (window.unityInstance) {
-          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Wallet not connected');
-        }
-        return;
-      }
+    // Transaction queue implementation
+    let transactionQueue = Promise.resolve();
 
-      if (!senderPrivateKey) {
-        showToast('Private key not configured. Contact support.', 'error');
-        if (window.unityInstance) {
-          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Private key not configured');
-        }
-        return;
-      }
-
-      try {
-        showToast('Processing transaction...', 'warning');
-        
-        const amount = web3.utils.toWei('0.0001', 'ether'); // 0.0001 tCORE
-        const nonce = await web3.eth.getTransactionCount(senderAddress, 'latest');
-        const gasPrice = await web3.eth.getGasPrice();
-        const gasLimit = 21000; // Standard for ETH/tCORE transfer
-
-        const tx = {
-          from: senderAddress,
-          to: connectedAddress,
-          value: amount,
-          gas: gasLimit,
-          gasPrice: gasPrice,
-          nonce: nonce
-        };
-
-        const signedTx = await web3.eth.accounts.signTransaction(tx, senderPrivateKey);
-        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-        
-        const txHashShort = receipt.transactionHash.substring(0, 6) + '...' + receipt.transactionHash.substring(receipt.transactionHash.length - 4);
-        showToast(`Success! Sent 0.0001 tCORE to your wallet. TX: ${txHashShort}`, 'success');
-        
-        if (window.unityInstance) {
-          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionSuccess', receipt.transactionHash);
-          // Refresh balance after transaction
-          const balance = await getNativeBalance();
-          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
-        }
-      } catch (error) {
-        console.error("Transaction error:", error);
-        showToast('Transaction failed: ' + (error.message || 'Unknown error'), 'error');
-        if (window.unityInstance) {
-          window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', error.message || 'Unknown error');
-        }
-      }
+    async function queueTransaction(fn) {
+      // Chain the new transaction to the queue
+      transactionQueue = transactionQueue.then(() => fn()).catch(() => {}); // Prevent queue break on error
+      return transactionQueue;
     }
 
-    // Improved toast notification with types
+    // Modified sendRewardTransaction to show a toast for every transaction
+    async function sendRewardTransaction() {
+      return queueTransaction(async () => {
+        showToast('Preparing transaction...', 'warning'); // Toast for queue entry
+
+        if (!web3 || !connectedAddress) {
+          showToast('Please connect your wallet first!', 'error');
+          if (window.unityInstance) {
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Wallet not connected');
+          }
+          return;
+        }
+
+        if (!senderPrivateKey) {
+          showToast('Private key not configured. Contact support.', 'error');
+          if (window.unityInstance) {
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', 'Private key not configured');
+          }
+          return;
+        }
+
+        try {
+          showToast('Processing transaction for ' + connectedAddress, 'warning'); // Toast for processing
+
+          const amount = web3.utils.toWei('0.0001', 'ether'); // 0.0001 tCORE
+          const nonce = await web3.eth.getTransactionCount(senderAddress, 'latest');
+          const gasPrice = await web3.eth.getGasPrice();
+          const gasLimit = 21000; // Standard for ETH/tCORE transfer
+
+          const tx = {
+            from: senderAddress,
+            to: connectedAddress,
+            value: amount,
+            gas: gasLimit,
+            gasPrice: gasPrice,
+            nonce: nonce
+          };
+
+          showToast('Signing transaction...', 'warning'); // Toast for signing
+
+          const signedTx = await web3.eth.accounts.signTransaction(tx, senderPrivateKey);
+
+          showToast('Sending transaction to network...', 'warning'); // Toast for sending
+
+          const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+          
+          const txHashShort = receipt.transactionHash.substring(0, 6) + '...' + receipt.transactionHash.substring(receipt.transactionHash.length - 4);
+          showToast(`Success! Sent 0.0001 tCORE to your wallet. TX: ${txHashShort}`, 'success');
+          
+          if (window.unityInstance) {
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionSuccess', receipt.transactionHash);
+            // Refresh balance after transaction
+            const balance = await getNativeBalance();
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTCORE2BalanceReceived', balance);
+          }
+        } catch (error) {
+          console.error("Transaction error:", error);
+          showToast('Transaction failed: ' + (error.message || 'Unknown error'), 'error');
+          if (window.unityInstance) {
+            window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionFailed', error.message || 'Unknown error');
+          }
+        }
+      });
+    }
+
+    // Improved toast notification with stacking and types
     function showToast(message, type = '') {
-      const toast = document.getElementById('toast');
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast';
       toast.textContent = message;
-      toast.className = 'toast'; // Reset classes
-      
-      if (type) {
-        toast.classList.add(type);
-      }
-      
-      toast.classList.add('show');
+      if (type) toast.classList.add(type);
+
+      container.appendChild(toast);
+
+      // Show with animation
+      setTimeout(() => {
+        toast.classList.add('show');
+      }, 10);
+
+      // Remove after 5 seconds
       setTimeout(() => {
         toast.classList.remove('show');
+        setTimeout(() => {
+          container.removeChild(toast);
+        }, 500);
       }, 5000);
     }
 
