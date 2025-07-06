@@ -384,7 +384,7 @@
           const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
           
           const txHashShort = receipt.transactionHash.substring(0, 6) + '...' + receipt.transactionHash.substring(receipt.transactionHash.length - 4);
-          showToast(`Success! Sent 0.0001 tCORE to your wallet. TX: ${txHashShort}`, 'success');
+          showToast(`Success! Sent 0.0001 APT to your wallet. TX: ${txHashShort}`, 'success');
           
           if (window.unityInstance) {
             window.unityInstance.SendMessage('CoreWalletConnector', 'OnTransactionSuccess', receipt.transactionHash);
